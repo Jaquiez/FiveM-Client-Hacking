@@ -8,7 +8,9 @@ The feature of most interest is the script execution from server to client which
 
 ## Debug Environment
 
-(TODO)
+FiveM source code is publicly available on [GitHub](https://github.com/citizenfx/fivem). Thanks to that, a debug build can be easily acquired by installing dependencies and compiling the project. The build folder contains both object (`exe` and `dll`) and symbol (`pdb`/Program Database) files.
+
+Two Windows debuggers are setup for this project: [x64dbg](https://x64dbg.com/) and [WinDbg Preview](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/debugger-download-tools). x64dbg is selected due to the capabilities of source code debugging and PDB parsing. Meanwhile, WinDbg Preview is chosen as a backup in case we could not attach using x64dbg.
 
 ## Map Out the Codebase
 
