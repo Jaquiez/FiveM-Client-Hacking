@@ -6,6 +6,7 @@ As a quick review from our last checkpoint we accomplished the following:
 2. Found a buffer overflow bug in the codebase
 3. Set up a plan to attack the target
 
+Our repository is [here](https://github.com/Jaquiez/FiveM-Client-Hacking).
 
 ## Debugging FiveM - A Painful Experience
 
@@ -33,10 +34,13 @@ and we decided to rely on observation from outside.
 
 In our testing we set up a FiveM server with the CfxDefault configuration as well as our debug build client. For reasons explained earier, we had to continue with the basic client for testing purposes. To recap from last time, our attack scenario for the buffer overflow bug was a malicious server owner that sends users an *evil* script that would break out of the Lua or JS runtime environment with `NativeInvoke` and execute arbitrary code via the exploitation techniques we learned in the class.
 
+![](./images/cmd.png)
 
 ### Setting Up The Server
 
 We set up a local server on the same network as the client and hosted our script on there. The user would download the script and for ease of testing we registered executing the payload through an in game command. With this we were able to use printline debugging to print out values of returned statements. 
+
+![](./images/evil.png)
 
 ### NativeInvoke or InvokeNative
 In Lua, our code is called `InvokeNative` which we can find the very well maintained documentation from [here](https://docs.fivem.net/docs/scripting-reference/runtimes/lua/functions/Citizen.InvokeNative). Yeah, there is pretty much no documentation on that here therefore we relied on older documentation, source code, and forum posts to figure out what this does. Essentially, it does the same thing as the `InvokeNative` but calls it through Lua and links to the C++ code in a separate file `code/components/citizen-scripting-lua/src/LuaScriptNatives.cpp` and `code/components/citizen-scripting-lua54/src/LuaScriptRuntime.cpp`. These two files have no mention of the original `InvokeNative` meaning we can either: focus entirely on the Lua implementation (which has been patched in the past) or we can focus on the buffer overflow we know is true in `NativeInvoke`. We chose to focus on what we have and figure it out through static analysis.
