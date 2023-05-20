@@ -42,6 +42,9 @@ as we use WinDbg or x64dbg, the process terminates shortly after, before the RIP
 could reach breakpoint. We suspect that the process can detect debugger on start,
 so we switch to attaching to the running (sub)processes.
 
+
+![FiveM spawned processes](./images/Screenshot%202023-05-20%20191224.png)
+
 At normal start, `FiveM.exe` produces the following processes (XXXX is 4-letter build number):
 
 ```
@@ -58,48 +61,48 @@ we look for process that imports `citizen-scripting-v8client.dll`,  `citizen-scr
 `citizen-scripting-lua.dll`. Using Sysinternals Process Explorer, we found that
 only `FiveM_bXXXX_GTAProcess.exe` matches.
 
+![`FiveM_bXXXX_GTAProcess.exe` imported exe](./images/Screenshot%202023-05-20%20191348.png)
+
 In few seconds after attaching to `FiveM_bXXXX_GTAProcess.exe`, exception such
-as `0xC0000005` (EXCEPTION_ACCESS_VIOLATION) occurred and we could not continue.
-Looking at the disassembly and call stack, the address and instructions looks
-irregular, suggesting that certain kind of anti-debugger measures were
-implemented.
+as `EXCEPTION_ACCESS_VIOLATION (0xC0000005)`,
+`EXCEPTION_ILLEGAL_INSTRUCTION (0xc000001d)` occurred and we could not continue.
+Looking at the disassembly, the address and instructions looks irregular,
+suggesting that certain kind of anti-debugger measures were implemented.
 
-Browsing x64dbg plugin, we found out ScyllaHide, an advanced user-mode anti-anti-debugger. Sadly, this would only lengthen the crash time, meaning
-there are multiple layers of anti-debugger. We list below the 
+### Anti-anti-debug
 
-### IsDebuggerPresent
+Believing this is anti-debug issues, we found out ScyllaHide, an advanced
+user-mode anti-anti-debugger. Sadly, only the crash time is longer, which means
+there are multiple layers of anti-debugger. We also attempted enabling all measures
+provided by the library, but there are no significant changes.
 
-This is a simple Windows API call that returns non-zero if the current process is
-running in the context of a debugger. Internally, it checks for BeingDebugged flag
-in PEB (Process Execution Block).
+![Corrupted disassembly](./images/Screenshot%202023-05-20%20193212.png)
+
+We decided to look at the call stack during crashing. When clicking at several code
+addresses, they points to either middle of an instruction or invalid location.
+Even when it points to the start of an instruction, that instruction is not
+`jump`, `call`, and also does not affect RIP at all.
+Our initial thought is that anti-debugging is still working and has shifted the RIP.
+
+![Potential point of anti-debug](./images/Screenshot%202023-05-20%20194020.png)
+
+At one thread, we found the existences of calls to `DbgPrint` and 
+`DbgBreakPoint` inside `FiveM_bXXXX_GTAProcess.exe`, and we traced the import
+and found that they are from `ntdll.dll`. Technically, both of the calls are Windows APIs that execute `int 2D`, an interrupt to switch control to kernel debugger, similar
+to what the names suggest. But `int 2D` can also be used to anti-debug as it
+causes one byte shift after generating exception in several debuggers like OllyDbg.
+Suspecting this to be the issue, we set breakpoint at `ntdll.dll` and replaced
+`int 2D` with `nop` before `ntdll.dll` is loaded, but then the game windows no
+longer show up. With n successful results, we insisted on finding measures that
+is similar to `int 2D` in the source code instead.
 
 
-
-<!-- ### Interrupt 2D
-
-This is an interesting debugging techniques. When running `int 2D` without debugger,
-an exception will occur, and program can capture this exception by using SEH (Structured Exception Handling).
-However, when the debugger is present, exception would be skipped, and things would get messed up.
-x64dbg, when running through this exception, has one byte shifted in the RIP, corrupting
-the disassembly and analysis. And this is annoying because never could we successfully
-break at the correct location to disable it.
-Through past researches, this also causes issue to OllyDbg, but not Visual Studio 2008
-debugger.
-
-
-
-
-### Implementation
-
-In fact, FiveM uses a Windows API that implement this technique:
-`DbgPrint` and `DbgBreakPoint`. According to the WDK documentations,
-these functions are supposedly used to break into kernel debugger.
-_If a debugger is not connected to the system, the exception can be handled in the standard way._ -->
 
 ### Anticlimactic
 
-When we were tracing anti-debug reference in the source code of FiveM,
-we came across this part ([code/client/citicore/SEHTableHandler.Win32.cpp, line 312-316](https://github.com/citizenfx/fivem/blob/2416297b835adc97d759542d94925dfad90903c1/code/client/citicore/SEHTableHandler.Win32.cpp#L312-L316)):
+When we were searching anti-debug reference in the source code of FiveM,
+we came across this part at
+[code/client/citicore/SEHTableHandler.Win32.cpp, line 312-316](https://github.com/citizenfx/fivem/blob/2416297b835adc97d759542d94925dfad90903c1/code/client/citicore/SEHTableHandler.Win32.cpp#L312-L316):
 
 ```c++
 static BOOLEAN WINAPI RtlDispatchExceptionStub(EXCEPTION_RECORD* record, CONTEXT* context)
@@ -112,15 +115,43 @@ static BOOLEAN WINAPI RtlDispatchExceptionStub(EXCEPTION_RECORD* record, CONTEXT
 ```
 
 `0xc0000008` exception code is STATUS_INVALID_HANDLE, meaning invalid handle.
-Based on the file name, an educated guess is that the program has custom code
-to handle Win32 SEH table.
-`CoreIsDebuggerPresent` is also called throughout the code base.
-As soon as the debugger is detected, this process
-force crashing itself and generating crash dump.
-Knowing that the program can hook to GTA safely, having this level of
-anti-debugging should not be surprising.
-At this point, we decide to give up debugging this mechanism and instead rely
-on outside observation.
+Based on the file name, an educated guess is that the program even has custom code
+to handle Win32 SEH (Structured Exception Handling), which is a mechanism that takes control and unwinds program in case an exception occurs
+in Windows. At this point, we realize the fact that GTA V itself is 
+hard to debug, so the FiveM needs to implement several anti-debug in order to
+attach to FiveM.
+
+Tracing `CoreIsDebuggerPresent` users, we found out that it is mostly used to
+workaround when debugging FiveM. For example, at [code/client/shared/Utils.cpp, line 186-197](https://github.com/citizenfx/fivem/blob/2416297b835adc97d759542d94925dfad90903c1/code/client/shared/Utils.cpp#L186C13-L197):
+
+```c++
+#if defined(_M_AMD64)
+	if (CoreIsDebuggerPresent())
+	{
+		// thanks to anti-debug workarounds (IsBeingDebugged == FALSE), we'll have to raise the exception to the debugger ourselves.
+		// sadly, RaiseException (and, by extension, RtlRaiseException) won't raise a first-chance exception, so we'll have to do such by hand...
+		// again, it may appear things 'work' if using a non-first-chance exception (i.e. the debugger will catch it), but VS doesn't like that and lets some
+		// cases of the exception fall through.
+
+		RaiseDebugException(buffer.c_str(), buffer.length());
+	}
+	else
+#endif
+	{
+		OutputDebugStringA(buffer.c_str());
+	}
+```
+
+Here, they re-raise the exception just so that debugger would not steal the
+original exception. As it turns out, the error we received at the beginning
+might have been explicit exceptions raised by FiveM itself.
+
+In conclusion, it is likely that our x64dbg and ScyllaHide have intervened
+the FiveM attaching process and caused issues.
+In fact, the `DbgBreakPoint` above is actually from ScyllaHide's hook library.
+Since we have been fighting _another debugger that has anti-anti-debug_ and we
+did not have the same debugger as the developer,
+we eventually decided to rely on outside observation instead.
 
 ## NativeInvoke & InvokeNative
 
